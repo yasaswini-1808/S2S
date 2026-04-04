@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.local
+.venv
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+backend/venv/
+backend/__pycache__/
+backend/.env
+tmp_*.py
+mock_test_*.json
