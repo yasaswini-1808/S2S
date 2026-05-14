@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends
+import logging
 from fastapi.security import OAuth2PasswordBearer
 from models import UserCreate, UserLogin, Token, UserResponse
 from database import db
@@ -10,6 +11,8 @@ from bson import ObjectId
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+logger = logging.getLogger(__name__)
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -47,7 +50,11 @@ async def register(user: UserCreate):
     existing_user = await db.users.find_one({"email": user.email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+    # bcrypt has a 72-byte input limit; reject overly long passwords with a clear error
+    pwd_bytes = user.password.encode('utf-8')
+    if len(pwd_bytes) > 72:
+        raise HTTPException(status_code=400, detail="Password too long; maximum is 72 bytes")
+
     hashed_password = get_password_hash(user.password)
     new_user = {
         "name": user.name,
@@ -56,9 +63,13 @@ async def register(user: UserCreate):
         "selected_path": None,
         "createdAt": datetime.datetime.utcnow()
     }
-    
-    result = await db.users.insert_one(new_user)
-    
+
+    try:
+        result = await db.users.insert_one(new_user)
+    except Exception as e:
+        logger.exception("Failed to insert new user into DB")
+        raise HTTPException(status_code=500, detail="Internal server error while creating account")
+
     access_token = create_access_token(
         data={"sub": str(result.inserted_id)}, 
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -68,7 +79,28 @@ async def register(user: UserCreate):
 @router.post("/login", response_model=Token)
 async def login(user: UserLogin):
     db_user = await db.users.find_one({"email": user.email})
-    if not db_user or not verify_password(user.password, db_user["password_hash"]):
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # protect against bcrypt input length errors
+    pwd_bytes = user.password.encode('utf-8')
+    if len(pwd_bytes) > 72:
+        raise HTTPException(status_code=400, detail="Password too long; maximum is 72 bytes")
+
+    try:
+        valid = verify_password(user.password, db_user["password_hash"])
+    except ValueError:
+        logger.exception("Bcrypt error during password verify - likely too long input")
+        raise HTTPException(status_code=400, detail="Password too long; maximum is 72 bytes")
+    except Exception:
+        logger.exception("Unexpected error during password verification")
+        raise HTTPException(status_code=500, detail="Internal server error during authentication")
+
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
